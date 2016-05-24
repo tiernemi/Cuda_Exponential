@@ -7,7 +7,7 @@ DEL_FILE= rm -f
 #PARALLEL	= -fopenmp
 #DEFINES		= -DWITH_OPENMP
 CFLAGS		= -W -Wall -lcuda $(PARALLEL) $(DEFINES)
-CXXFLAGS    = -lGL -lglut -lpthread -llibtiff  -Og -finline-functions -ffast-math -fomit-frame-pointer -funroll-loops -W -Wall -lcuda $(PARALLEL) $(DEFINES) -std=c++11
+CXXFLAGS    = -lGL -lglut -lpthread -llibtiff  -O3 -finline-functions -ffast-math -fomit-frame-pointer -funroll-loops -W -Wall -lcuda $(PARALLEL) $(DEFINES) -std=c++11 -lm
 
 NVCCFLAGS	= -O5 -DWITH_MY_DEBUG -std=c++11 -arch=sm_35 --relocatable-device-code true -lcudadevrt --use_fast_math 
 LIBS		= $(PARALLEL)

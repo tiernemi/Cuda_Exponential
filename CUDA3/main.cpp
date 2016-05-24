@@ -5,7 +5,7 @@
 
 #include <iostream>
 #include <limits>       // std::numeric_limits
-#include <math.h>
+#include <cmath>
 #include <stdio.h>
 #include <stdlib.h>
 #include <vector>
@@ -19,12 +19,25 @@ using namespace std;
 template <class DataType>
 DataType exponentialIntegral(const int n, const DataType & x) ;
 void outputResultsCpu(const std::vector<std::vector<float>> &resultsFloatCpu,const std::vector<std::vector<double>> &resultsDoubleCpu) ;
-void outputResultsGpu(const std::vector<std::vector<float>> &resultsFloatGpu, const std::vector<std::vector<double>> &resultsDoubleGpu) ;
+void outputResultsGpu(const float * resultsFloatGpu, const double * resultsDoubleGpu) ;
 int	parseArguments(int argc, char **argv) ;
 void printUsage(void) ;
+template <typename DataType>
+void checkDeviation(std::vector<std::vector<DataType>> & resultsCpu, DataType * resultsGpu) ;
+
+template <typename data>
+data testFunc() {
+	return 0 ;
+}
+
+template <>
+float testFunc() {
+	return 0 ;
+}
+
 
 bool verbose,timing,cpu,gpu ;
-unsigned int order,numberOfSamples;
+unsigned int order,numberOfSamples,blockSizeOr,blockSizeSm ;
 double sampleRegionStart,sampleRegionEnd;	// The interval that we are going to use
 
 int main(int argc, char *argv[]) {
@@ -39,6 +52,8 @@ int main(int argc, char *argv[]) {
 	numberOfSamples=10 ; // default
 	sampleRegionStart=0.0 ; // default
 	sampleRegionEnd=10.0 ; // default
+	blockSizeOr = 32 ;
+	blockSizeSm = 32 ;
 
 	struct timeval expoStart, expoEnd;
 
@@ -69,13 +84,15 @@ int main(int argc, char *argv[]) {
 
 	std::vector<std::vector<float>> resultsFloatCpu;
 	std::vector<std::vector<double>> resultsDoubleCpu;
-	std::vector<std::vector<float>> resultsFloatGpu;
-	std::vector<std::vector<double>> resultsDoubleGpu;
+	float * resultsFloatGpu;
+	double * resultsDoubleGpu;
 
 	double timeTotalCpuFloat=0.0;
 	double timeTotalGpuFloat=0.0;
 	double timeTotalCpuDouble=0.0;
 	double timeTotalGpuDouble=0.0;
+	double timeTransferFloat=0.0;
+	double timeTransferDouble=0.0;
 
 	try {
 		resultsFloatCpu.resize(order,vector<float>(numberOfSamples));
@@ -87,16 +104,8 @@ int main(int argc, char *argv[]) {
 	} catch (std::bad_alloc const&) {
 		cout << "resultsDoubleCpu memory allocation fail!" << endl;	exit(1);
 	}
-    try {
-		resultsFloatGpu.resize(order,vector<float>(numberOfSamples));
-	} catch (std::bad_alloc const&) {
-		cout << "resultsFloatGpu memory allocation fail!" << endl;	exit(1);
-	}
-	try {
-		resultsDoubleGpu.resize(order,vector<double>(numberOfSamples));
-	} catch (std::bad_alloc const&) {
-		cout << "resultsDoubleGpu memory allocation fail!" << endl;	exit(1);
-	}
+	resultsDoubleGpu = (double*) malloc(sizeof(double)*numberOfSamples*order) ;
+	resultsFloatGpu = (float*) malloc(sizeof(float)*numberOfSamples*order) ;
 
 	double x,division=(sampleRegionEnd-sampleRegionStart)/((double)(numberOfSamples));
 
@@ -123,9 +132,9 @@ int main(int argc, char *argv[]) {
 	}
 	if (gpu) {
 		cudaRunExponentials(order,numberOfSamples,sampleRegionStart,sampleRegionEnd,resultsFloatGpu,
-				resultsDoubleGpu,timeTotalGpuFloat,timeTotalGpuDouble) ;
+				resultsDoubleGpu,timeTotalGpuFloat,timeTotalGpuDouble, blockSizeOr, blockSizeSm,
+				timeTransferFloat, timeTransferDouble) ;
 	}
-
 
 	if (timing) {
 		if (cpu) {
@@ -140,13 +149,26 @@ int main(int argc, char *argv[]) {
 			printf ("speed-up for cpu Vs gpu is %f for floats\n", timeTotalCpuFloat / timeTotalGpuFloat );
 			printf ("speed-up for cpu Vs gpu is %f for doubles\n", timeTotalCpuDouble / timeTotalGpuDouble );
 		}
+		if (gpu && cpu) {
+			printf (" %% transfer/total %f for floats\n", timeTransferFloat/timeTotalGpuFloat );
+			printf (" %% transfer/total %f for doubles\n",  timeTransferDouble/timeTotalGpuDouble );
+		}
 	}
 
 	if (verbose) {
 		if (cpu) {
 			outputResultsCpu (resultsFloatCpu,resultsDoubleCpu) ;
+		}
+		if (gpu) {
 			outputResultsGpu (resultsFloatGpu,resultsDoubleGpu) ;
 		}
+	}
+
+	if (cpu && gpu) {
+		printf("FLOAT DEVIATIONS >>> \n");
+		checkDeviation(resultsFloatCpu,resultsFloatGpu) ;
+		printf("DOUBLE DEVIATIONS >>> \n");
+		checkDeviation(resultsDoubleCpu,resultsDoubleGpu) ;
 	}
 	return 0;
 }
@@ -166,12 +188,8 @@ void outputResultsCpu(const std::vector<std::vector<float>> &resultsFloatCpu, co
 	double x = 0 ;
 	double division=(sampleRegionEnd-sampleRegionStart)/((double)(numberOfSamples)); // delta x
 	for (unsigned ui=1;ui<=order;ui++) {
-		double totD = 0.f ;
-		double totF = 0.f ;
 		for (unsigned uj=1;uj<=numberOfSamples;uj++) {
 			x=sampleRegionStart+uj*division ;
-			totD += resultsDoubleCpu[ui-1][uj-1] ;
-			totF += resultsFloatCpu[ui-1][uj-1] ;
 			std::cout << "CPU==> exponentialIntegralDouble (" << ui << "," << x <<")=" << resultsDoubleCpu[ui-1][uj-1] << " ,";
 			std::cout << "exponentialIntegralFloat  (" << ui << "," << x <<")=" << resultsFloatCpu[ui-1][uj-1] << endl;
 		}
@@ -189,18 +207,14 @@ void outputResultsCpu(const std::vector<std::vector<float>> &resultsFloatCpu, co
  * =====================================================================================
  */
 
-void outputResultsGpu(const std::vector<std::vector<float>> &resultsFloatGpu, const std::vector<std::vector<double>> &resultsDoubleGpu) {
+void outputResultsGpu(const float * resultsFloatGpu, const double * resultsDoubleGpu) {
 	double x = 0 ;
 	double division=(sampleRegionEnd-sampleRegionStart)/((double)(numberOfSamples)); // delta x
-	for (unsigned ui=1;ui<=order;ui++) {
-		double totD = 0.f ;
-		double totF = 0.f ;
-		for (unsigned uj=1;uj<=numberOfSamples;uj++) {
-			x=sampleRegionStart+uj*division ;
-			totD += resultsDoubleGpu[ui-1][uj-1] ;
-			totF += resultsFloatGpu[ui-1][uj-1] ;
-			std::cout << "CPU==> exponentialIntegralDouble (" << ui << "," << x <<")=" << resultsDoubleGpu[ui-1][uj-1] << " ,";
-			std::cout << "exponentialIntegralFloat  (" << ui << "," << x <<")=" << resultsFloatGpu[ui-1][uj-1] << endl;
+	for (unsigned ui=0;ui<order;ui++) {
+		for (unsigned uj=0;uj<numberOfSamples;uj++) {
+			x=sampleRegionStart+(uj+1)*division ;
+			std::cout << "GPU ==> exponentialIntegralDouble (" << ui+1 << "," << x <<")=" << resultsDoubleGpu[uj+ui*numberOfSamples] << " ,";
+			std::cout << "exponentialIntegralFloat  (" << ui+1 << "," << x <<")=" << resultsFloatGpu[uj+ui*numberOfSamples] << endl;
 		}
 	}
 }
@@ -291,7 +305,7 @@ DataType exponentialIntegral (const int n, const DataType & x) {
 
 int parseArguments (int argc, char *argv[]) {
 	int c;
-	while ((c = getopt (argc, argv, "cghn:m:a:b:tv")) != -1) {
+	while ((c = getopt (argc, argv, "cghn:m:a:b:tvo:s:")) != -1) {
 		switch(c) {
 			case 'c':
 				cpu=false; break;	 //Skip the CPU test
@@ -305,6 +319,10 @@ int parseArguments (int argc, char *argv[]) {
 				sampleRegionStart = atof(optarg); break;
 			case 'b':
 				sampleRegionEnd = atof(optarg); break;
+			case 'o':
+				blockSizeOr = atof(optarg); break;
+			case 's':
+				blockSizeSm = atof(optarg); break;
 			case 't':
 				timing = true; break;
 			case 'v':
@@ -342,5 +360,34 @@ void printUsage () {
 	printf("      -m   size    : will set the number of samples taken in the (a,b) interval to size (default: 10)\n");
 	printf("      -t           : will output the amount of time that it took to generate each norm (default: no)\n");
 	printf("      -v           : will activate the verbose mode  (default: no)\n");
+	printf("      -o           : Number of threads in a order blocks  (default: 32)\n");
+	printf("      -s           : Number of threads in a sample blocks  (default: 32)\n");
 	printf("     \n");
 }
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  checkDeviation
+ *    Arguments:  
+ *      Returns:  
+ *  Description:  
+ * =====================================================================================
+ */
+
+template <typename DataType>
+void checkDeviation(std::vector<std::vector<DataType>> & resultsCpu, DataType * resultsGpu) {
+	DataType dev = 0.f ;
+	bool noDevs = true ;
+	for (int i = 0; i < resultsCpu.size() ; ++i) {
+		for (int j = 0 ; j < resultsCpu[i].size() ; ++j) {
+			if ( (dev = std::abs(resultsCpu[i][j] - resultsGpu[i*resultsCpu[i].size()+j])) > 1E-5) {
+				printf("Deviation at result [%d %d %lf]\n", i, j, dev) ; 
+				noDevs = false ;
+			}
+		}
+	}
+	if (noDevs) {
+		std::cout << "No Deviations!" << std::endl;
+	}
+}		/* -----  end of function checkDeviation  ----- */
+

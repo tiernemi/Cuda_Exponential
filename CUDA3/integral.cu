@@ -16,71 +16,222 @@
  */
 
 #include "integral.hpp"
+#include "stdio.h"
+#include <math_constants.h>
 
-/* 
- * ===  FUNCTION  ======================================================================
- *         Name:  cudaExponentialIntegral
- *    Arguments:  const int n 
- *    Arguments:  const int n - The order of the function E_n
- *                const Datatype & x - The argument x of E_n(x)
- *      Returns:  The value of the integral \int_1^\inf \frac{e^{-xt}}{t^n} dt 
- *  Description:  Evaluates the integral E_n using two different converging series
- *                depending on the magnitude of x.
- * =====================================================================================
- */
+#define WARPSIZE 32
+#define MAXEVALS 1E7
+#define FEPSILON 1.19209e-07
+#define DEPSILON 2.22045e-16
+
+__constant__ int blockDimInnerC ;
+__constant__ int gridDimInnerC ;
+__constant__ int maxIterations ;//=2000000000 ; // Maximum number of iters in sequence.
+
+template <typename data>
+__inline__ __device__ data getEulerC() {
+	return  0.5772157 ;
+}
+
+template <>
+__inline__ __device__ float getEulerC<>() {
+	return  0.5772157 ;
+}
+
+template <>
+__inline__ __device__ double getEulerC<>() {
+	return 0.5772156649015329 ;
+}
+
+template <typename data>
+__inline__ __device__ data getMaxVal() {
+	return CUDART_INF_F ;
+}
+
+template <>
+__inline__ __device__ float getMaxVal<>() {
+	return CUDART_INF_F ;
+}
+
+template <>
+__inline__ __device__ double getMaxVal<>() {
+	return CUDART_INF ;
+}
+
+template <typename data>
+__inline__ __device__ data getEPS() {
+	return FEPSILON ;
+}
+
+template <>
+__inline__ __device__ float getEPS<>() {
+	return FEPSILON ;
+}
+
+template <>
+__inline__ __device__ double getEPS<>() {
+	return DEPSILON ;
+}
 
 template <typename DataType>
-DataType cudaExponentialIntegral(const int n, const DataType x) {
+__inline__ __device__ DataType evalExpIntegralGt1(int orderm1, DataType arg, DataType * dataLoc) {
+	DataType del ;
+	DataType a = 0 ;
+	DataType b = arg+orderm1+1 ;
+	DataType c = getMaxVal<DataType>() ;
+	DataType d = 1.0/b ;
+	DataType h = d ;
+	DataType eps = getEPS<DataType>() ;
+	for (int i = 1 ; i <= MAXEVALS ; i++) {
+		a = -i*(orderm1+i) ;
+		b += 2.0 ;
+		d = 1.0/(a*d+b) ;
+		c = b+a/c ;
+		del = c*d ;
+		h *= del ;
+		if (fabs(del-1.0) <= eps) {
+			return h*exp(-arg) ;
+		}
+	}
 	return 0 ;
 }
 
-template float cudaExponentialIntegral<float>(const int n, const float x) ;
-template double cudaExponentialIntegral<double>(const int n, const double x) ;
+template <typename DataType>
+__inline__ __device__ DataType evalExpIntegralLt1(int orderm1, DataType arg, DataType * dataLoc) {
+	DataType ans = (orderm1 !=0 ? 1.0/orderm1 : -log(arg)-getEulerC<DataType>()) ;
+	DataType fact = 1.0 ;
+	DataType del = 0.0 ;
+	DataType psi = 0.0 ;
+	DataType eps = getEPS<DataType>() ;
+	DataType meuler = -getEulerC<DataType>() ;
+	for (DataType i = 1 ; i <= MAXEVALS ; i++) {
+		fact *= -arg/i ;
+		if (i != orderm1) {
+			del = -fact/(i-orderm1) ;
+		} else {
+			psi = meuler ;
+			for (DataType ii = 1; ii <= orderm1 ; ii++) {
+				psi += 1.0/ii ;
+			}
+			del = fact*(-log(arg)+psi) ;
+		}
+		ans += del ;
+		if (fabs(del) < fabs(ans)*eps) {
+			return ans ;
+		}
+	}
+	return 0 ;
+}
+
+template <typename DataType>
+__global__ void evalOrder(int numOrders, int numberOfSamples, DataType x, DataType * gpuData) {
+	int globalID = threadIdx.x + blockIdx.x*blockDim.x ;
+	if (globalID < numOrders) {
+		if (x > 1) {
+			gpuData[globalID*numberOfSamples] = evalExpIntegralGt1(globalID,x,gpuData+globalID*numberOfSamples) ;
+		} else {
+			gpuData[globalID*numberOfSamples] = evalExpIntegralLt1(globalID,x,gpuData+globalID*numberOfSamples) ;
+		}
+	}
+}
+
+template <typename DataType>
+__global__ void evalSamples(int numOrders, int numberOfSamples, double sampleRegionStart, double division, DataType * gpuData) {
+	int globalID = threadIdx.x + blockIdx.x*blockDim.x ;
+	if (globalID < numberOfSamples) {
+		DataType x = sampleRegionStart+(globalID+1)*division ;
+		evalOrder<<<blockDimInnerC,gridDimInnerC>>>(numOrders,numberOfSamples,x,gpuData+globalID) ;
+	}
+}
 
 /* 
  * ===  FUNCTION  ======================================================================
  *         Name:  cudaRunExponentials
- *    Arguments:  
- *      Returns:  
- *  Description:  
+ *    Arguments:  int order - The maximum order being evaluated.
+ *                int numberOfSamples - The number of samples to take in domain (a,b)
+ *                double & sampleRegionStart - The start of the domain (a,b)
+ *                double & sampleRegionEnd - The end of the interval (a,b)
+ *                float * resultsFloatGpu - The results for the GPU evaluations.
+ *                double * resultsDoubleGpu - The results for the GP evaluations.
+ *                double & timeTotalGpuFloat - Time taken to evaluate floats on GPU.
+ *                double & timeTotalGpuDouble - Time taken to evaluate doubles on GPU.
+ *                int blockSizeOr - The block size associated with orders.
+ *                int blockSizeSm - The block size associated with samples.
+ *                double & transferTimeFloat - Time taken to transfer data from GPU to DRAM.
+ *                double & transferTimeDouble - Time taken to transfer data from GPU to DRAM.
+ *               
+ *  Description:  Evaluates the exponential integral between (a,b) for a number of
+ *                orders and samples.
+ *
  * =====================================================================================
  */
 
-void cudaRunExponentials(const int order, const int numberOfSamples, double & sampleRegionStart, double & sampleRegionEnd,
-		              std::vector< std::vector<float> > & resultsFloatGpu, 
-					  std::vector< std::vector<double> > & resultsDoubleGpu,
-					  double & timeTotalGpuFloat, double & timeTotalGpuDouble) {
+void cudaRunExponentials(int order, int numberOfSamples, double & sampleRegionStart, double & sampleRegionEnd,
+						float * resultsFloatGpu, double * resultsDoubleGpu, double & timeTotalGpuFloat, double & timeTotalGpuDouble, 
+						int blockSizeOr, int blockSizeSm, double & transferTimeFloat, double & transferTimeDouble) {
+
+	int numResults = numberOfSamples*order ;
+	int blockDimInner = blockSizeOr ;
+	int blockDimOuter = blockSizeSm ;
+	dim3 dim3BlockOuter(blockDimOuter) ;
+	dim3 dim3GridOuter((numberOfSamples/dim3BlockOuter.x) + (!(numberOfSamples%dim3BlockOuter.x)?0:1) );
+	int gridDimInner = (order/blockDimInner) + (!(order%blockDimInner)?0:1) ;
+
 	float elapsedTime ;
 	cudaEvent_t start, finish ;
+	cudaEvent_t transStart, transFinish ;
 	cudaEventCreate(&start) ;
 	cudaEventCreate(&finish) ;
+	cudaEventCreate(&transStart) ;
+	cudaEventCreate(&transFinish) ;
 
-	double x,division=(sampleRegionEnd-sampleRegionStart)/((double)(numberOfSamples));
+    double division=(sampleRegionEnd-sampleRegionStart)/((double)(numberOfSamples));
 	// Float. //
 	cudaEventRecord(start, 0) ;
-	for (int ui=1;ui<=order;ui++) {
-		for (int uj=1;uj<=numberOfSamples;uj++) {
-			x = sampleRegionStart+uj*division;
-			resultsFloatGpu[ui-1][uj-1] = cudaExponentialIntegral<float>(ui,x) ;
-		}
-	}
+
+	float * gpuFloatData ;
+	cudaMalloc((void**) &gpuFloatData, sizeof(float)*numResults) ;
+	cudaMemcpyToSymbol(blockDimInnerC, &blockDimInner, sizeof(int), 0, cudaMemcpyHostToDevice) ;
+	cudaMemcpyToSymbol(gridDimInnerC, &gridDimInner, sizeof(int), 0, cudaMemcpyHostToDevice) ;
+	evalSamples<<<dim3GridOuter,dim3BlockOuter>>>(order, numberOfSamples, sampleRegionStart, division, gpuFloatData) ;
+
+	cudaEventRecord(transStart,0) ;
+	cudaMemcpy(resultsFloatGpu,gpuFloatData,sizeof(float)*numResults, cudaMemcpyDeviceToHost) ;
+	cudaEventRecord(transFinish,0) ;
+	cudaEventSynchronize(transFinish) ;
+	cudaEventElapsedTime(&elapsedTime, transStart, transFinish);
+	transferTimeFloat = elapsedTime/1E3 ;
+
+	cudaFree(gpuFloatData) ;
+
 	cudaEventRecord(finish, 0) ;
 	cudaEventSynchronize(finish) ;
 	cudaEventElapsedTime(&elapsedTime, start, finish);
-	timeTotalGpuFloat = elapsedTime ;
+	timeTotalGpuFloat = elapsedTime/1E3 ;
 
 	// Double. //
 	cudaEventRecord(start, 0) ;
-	for (int ui=1;ui<=order;ui++) {
-		for (int uj=1;uj<=numberOfSamples;uj++) {
-			x = sampleRegionStart+uj*division;
-			resultsDoubleGpu[ui-1][uj-1] = cudaExponentialIntegral<double>(ui,x) ;
-		}
-	}
+
+	double * gpuDoubleData ;
+	cudaMalloc((void**) &gpuDoubleData, sizeof(double)*numResults) ;
+	cudaMemcpyToSymbol(blockDimInnerC, &blockDimInner, sizeof(int), 0, cudaMemcpyHostToDevice) ;
+	cudaMemcpyToSymbol(gridDimInnerC, &gridDimInner, sizeof(int), 0, cudaMemcpyHostToDevice) ;
+	evalSamples<<<dim3GridOuter,dim3BlockOuter>>>(order, numberOfSamples, sampleRegionStart, division, gpuDoubleData) ;
+
+	cudaEventRecord(transStart,0) ;
+	cudaMemcpy(resultsDoubleGpu,gpuDoubleData,sizeof(double)*numResults, cudaMemcpyDeviceToHost) ;
+	cudaEventRecord(transFinish,0) ;
+	cudaEventSynchronize(transFinish) ;
+	cudaEventElapsedTime(&elapsedTime, transStart, transFinish);
+	transferTimeDouble = elapsedTime/1E3 ;
+
+	cudaFree(gpuDoubleData) ;
+
+	cudaEventRecord(finish, 0) ;
 	cudaEventSynchronize(finish) ;
 	cudaEventElapsedTime(&elapsedTime, start, finish);
-	timeTotalGpuDouble = elapsedTime ;
-
+	printf("%f\n", elapsedTime);
+	timeTotalGpuDouble = elapsedTime/1E3 ;
 }		/* -----  end of function cudaRunExponentials  ----- */
 
 

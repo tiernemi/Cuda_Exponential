@@ -20,9 +20,8 @@
 
 #include <vector>
 
-void cudaRunExponentials(const int order, const int numberOfSamples, double sampleRegionStart, double sampleRegionEnd,
-		              std::vector< std::vector<float> > & resultsFloatGpu, 
-					  std::vector< std::vector<double> > & resultsDoubleGpu,
-					  double & timeTotalGpuFloat, double & timeTotalGpuDouble ) ;
+void cudaRunExponentials(int order, int numberOfSamples, double & sampleRegionStart, double & sampleRegionEnd,
+		              float * resultsFloatGpu, double * resultsDoubleGpu, double & timeTotalGpuFloat, double & timeTotalGpuDouble, 
+					  int blockSizeOr, int blockSizeSm, double & transferTimeFloat, double & transferTimeDouble) ;
 
 #endif /* end of include guard: INTEGRAL_HPP_O4WBDGSQ */
