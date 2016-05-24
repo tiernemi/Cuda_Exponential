@@ -24,8 +24,6 @@
 #define FEPSILON 1.19209e-07
 #define DEPSILON 2.22045e-16
 
-__constant__ int blockDimInnerC ;
-__constant__ int gridDimInnerC ;
 __constant__ int maxIterations ;//=2000000000 ; // Maximum number of iters in sequence.
 
 template <typename data>
@@ -137,10 +135,15 @@ __global__ void evalOrder(int numOrders, int numberOfSamples, DataType x, DataTy
 
 template <typename DataType>
 __global__ void evalSamples(int numOrders, int numberOfSamples, double sampleRegionStart, double division, DataType * gpuData) {
-	int globalID = threadIdx.x + blockIdx.x*blockDim.x ;
-	if (globalID < numberOfSamples) {
-		DataType x = sampleRegionStart+(globalID+1)*division ;
-		evalOrder<<<blockDimInnerC,gridDimInnerC>>>(numOrders,numberOfSamples,x,gpuData+globalID) ;
+	int globalIDx = threadIdx.x + blockIdx.x*blockDim.x ;
+	int globalIDy = threadIdx.y + blockIdx.y*blockDim.y ;
+	if (globalIDx < numberOfSamples && globalIDy < numOrders) {
+		DataType x = sampleRegionStart+(globalIDy+1)*division ;
+		if (x > 1) {
+			gpuData[globalIDx*numberOfSamples+globalIDy] = evalExpIntegralGt1(globalIDx,x,gpuData+globalIDx*numberOfSamples+globalIDy) ;
+		} else {
+			gpuData[globalIDx*numberOfSamples+globalIDy] = evalExpIntegralLt1(globalIDx,x,gpuData+globalIDx*numberOfSamples+globalIDy) ;
+		}
 	}
 }
 
@@ -171,11 +174,9 @@ void cudaRunExponentials(int order, int numberOfSamples, double & sampleRegionSt
 						int blockSizeOr, int blockSizeSm, double & transferTimeFloat, double & transferTimeDouble) {
 
 	int numResults = numberOfSamples*order ;
-	int blockDimInner = blockSizeOr ;
-	int blockDimOuter = blockSizeSm ;
-	dim3 dim3BlockOuter(blockDimOuter) ;
-	dim3 dim3GridOuter((numberOfSamples/dim3BlockOuter.x) + (!(numberOfSamples%dim3BlockOuter.x)?0:1) );
-	int gridDimInner = (order/blockDimInner) + (!(order%blockDimInner)?0:1) ;
+	dim3 dim3BlockOuter(blockSizeOr,blockSizeSm) ;
+	dim3 dim3GridOuter((order/dim3BlockOuter.x) + (!(order%dim3BlockOuter.x)?0:1) , 
+			(numberOfSamples/dim3BlockOuter.x) + (!(numberOfSamples%dim3BlockOuter.x)?0:1));
 
 	float elapsedTime ;
 	cudaEvent_t start, finish ;
@@ -191,8 +192,6 @@ void cudaRunExponentials(int order, int numberOfSamples, double & sampleRegionSt
 
 	float * gpuFloatData ;
 	cudaMalloc((void**) &gpuFloatData, sizeof(float)*numResults) ;
-	cudaMemcpyToSymbol(blockDimInnerC, &blockDimInner, sizeof(int), 0, cudaMemcpyHostToDevice) ;
-	cudaMemcpyToSymbol(gridDimInnerC, &gridDimInner, sizeof(int), 0, cudaMemcpyHostToDevice) ;
 	evalSamples<<<dim3GridOuter,dim3BlockOuter>>>(order, numberOfSamples, sampleRegionStart, division, gpuFloatData) ;
 
 	cudaEventRecord(transStart,0) ;
@@ -214,8 +213,6 @@ void cudaRunExponentials(int order, int numberOfSamples, double & sampleRegionSt
 
 	double * gpuDoubleData ;
 	cudaMalloc((void**) &gpuDoubleData, sizeof(double)*numResults) ;
-	cudaMemcpyToSymbol(blockDimInnerC, &blockDimInner, sizeof(int), 0, cudaMemcpyHostToDevice) ;
-	cudaMemcpyToSymbol(gridDimInnerC, &gridDimInner, sizeof(int), 0, cudaMemcpyHostToDevice) ;
 	evalSamples<<<dim3GridOuter,dim3BlockOuter>>>(order, numberOfSamples, sampleRegionStart, division, gpuDoubleData) ;
 
 	cudaEventRecord(transStart,0) ;
