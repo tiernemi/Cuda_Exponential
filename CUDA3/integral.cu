@@ -24,7 +24,8 @@
 #define FEPSILON 1.19209e-07
 #define DEPSILON 2.22045e-16
 
-__constant__ int maxIterations ;//=2000000000 ; // Maximum number of iters in sequence.
+
+// Helpful templated getters for GPU EPS and MAX vals.
 
 template <typename data>
 __inline__ __device__ data getEulerC() {
@@ -71,8 +72,18 @@ __inline__ __device__ double getEPS<>() {
 	return DEPSILON ;
 }
 
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  integral
+ *    Arguments:  int orderm1 - The order n minus 1.
+ *                Datatype arg - The argument x in E(n,x)
+ *      Returns:  The value of the integral \int_1^\inf \frac{e^{-xt}}{t^n} dt 
+ *  Description:  Evaluates the integral E_n using a continued fraction series for x > 1.
+ * =====================================================================================
+ */
+
 template <typename DataType>
-__inline__ __device__ DataType evalExpIntegralGt1(int orderm1, DataType arg, DataType * dataLoc) {
+__inline__ __device__ DataType evalExpIntegralGt1(int orderm1, DataType arg) {
 	DataType del ;
 	DataType a = 0 ;
 	DataType b = arg+orderm1+1 ;
@@ -94,8 +105,18 @@ __inline__ __device__ DataType evalExpIntegralGt1(int orderm1, DataType arg, Dat
 	return 0 ;
 }
 
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  integral
+ *    Arguments:  int orderm1 - The order n minus 1.
+ *                Datatype arg - The argument x in E(n,x)
+ *      Returns:  The value of the integral \int_1^\inf \frac{e^{-xt}}{t^n} dt 
+ *  Description:  Evaluates the integral E_n using a converging series for x < 1.
+ * =====================================================================================
+ */
+
 template <typename DataType>
-__inline__ __device__ DataType evalExpIntegralLt1(int orderm1, DataType arg, DataType * dataLoc) {
+__inline__ __device__ DataType evalExpIntegralLt1(int orderm1, DataType arg) {
 	DataType ans = (orderm1 !=0 ? 1.0/orderm1 : -log(arg)-getEulerC<DataType>()) ;
 	DataType fact = 1.0 ;
 	DataType del = 0.0 ;
@@ -121,28 +142,29 @@ __inline__ __device__ DataType evalExpIntegralLt1(int orderm1, DataType arg, Dat
 	return 0 ;
 }
 
-template <typename DataType>
-__global__ void evalOrder(int numOrders, int numberOfSamples, DataType x, DataType * gpuData) {
-	int globalID = threadIdx.x + blockIdx.x*blockDim.x ;
-	if (globalID < numOrders) {
-		if (x > 1) {
-			gpuData[globalID*numberOfSamples] = evalExpIntegralGt1(globalID,x,gpuData+globalID*numberOfSamples) ;
-		} else {
-			gpuData[globalID*numberOfSamples] = evalExpIntegralLt1(globalID,x,gpuData+globalID*numberOfSamples) ;
-		}
-	}
-}
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  evalSamples
+ *    Arguments:  int numOrders - The maximum number of orders to evaluate.
+ *                int numberOfSamples - The number of samples to take.
+ *                Datatype sampleRegionStart - The start or the region (a,b)
+ *                Datatype division - Distance bewteen evaluations in (a,b)
+ *                Datatype * gpuData - Location of data on GPU.
+ *  Description:  Evaluates E_(n,x) over domain n element of (1,n) and x element of
+ *                (a,b) where there are numSamples evaluations of x.
+ * =====================================================================================
+ */
 
 template <typename DataType>
-__global__ void evalSamples(int numOrders, int numberOfSamples, double sampleRegionStart, double division, DataType * gpuData) {
+__global__ void evalSamples(int numOrders, int numberOfSamples, DataType sampleRegionStart, DataType division, DataType * gpuData) {
 	int globalIDx = threadIdx.x + blockIdx.x*blockDim.x ;
 	int globalIDy = threadIdx.y + blockIdx.y*blockDim.y ;
 	if (globalIDx < numberOfSamples && globalIDy < numOrders) {
 		DataType x = sampleRegionStart+(globalIDy+1)*division ;
 		if (x > 1) {
-			gpuData[globalIDx*numberOfSamples+globalIDy] = evalExpIntegralGt1(globalIDx,x,gpuData+globalIDx*numberOfSamples+globalIDy) ;
+			gpuData[globalIDx*numberOfSamples+globalIDy] = evalExpIntegralGt1(globalIDx,x) ;
 		} else {
-			gpuData[globalIDx*numberOfSamples+globalIDy] = evalExpIntegralLt1(globalIDx,x,gpuData+globalIDx*numberOfSamples+globalIDy) ;
+			gpuData[globalIDx*numberOfSamples+globalIDy] = evalExpIntegralLt1(globalIDx,x) ;
 		}
 	}
 }
@@ -177,7 +199,6 @@ void cudaRunExponentials(int order, int numberOfSamples, double & sampleRegionSt
 	dim3 dim3BlockOuter(blockSizeOr,blockSizeSm) ;
 	dim3 dim3GridOuter((order/dim3BlockOuter.x) + (!(order%dim3BlockOuter.x)?0:1) , 
 			(numberOfSamples/dim3BlockOuter.x) + (!(numberOfSamples%dim3BlockOuter.x)?0:1));
-
 	float elapsedTime ;
 	cudaEvent_t start, finish ;
 	cudaEvent_t transStart, transFinish ;
@@ -185,15 +206,17 @@ void cudaRunExponentials(int order, int numberOfSamples, double & sampleRegionSt
 	cudaEventCreate(&finish) ;
 	cudaEventCreate(&transStart) ;
 	cudaEventCreate(&transFinish) ;
-
     double division=(sampleRegionEnd-sampleRegionStart)/((double)(numberOfSamples));
+	
 	// Float. //
 	cudaEventRecord(start, 0) ;
 
+	// Eval. //
 	float * gpuFloatData ;
 	cudaMalloc((void**) &gpuFloatData, sizeof(float)*numResults) ;
-	evalSamples<<<dim3GridOuter,dim3BlockOuter>>>(order, numberOfSamples, sampleRegionStart, division, gpuFloatData) ;
+	evalSamples<<<dim3GridOuter,dim3BlockOuter>>>(order, numberOfSamples, float(sampleRegionStart), float(division), gpuFloatData) ;
 
+	// Write Back. //
 	cudaEventRecord(transStart,0) ;
 	cudaMemcpy(resultsFloatGpu,gpuFloatData,sizeof(float)*numResults, cudaMemcpyDeviceToHost) ;
 	cudaEventRecord(transFinish,0) ;
@@ -211,10 +234,12 @@ void cudaRunExponentials(int order, int numberOfSamples, double & sampleRegionSt
 	// Double. //
 	cudaEventRecord(start, 0) ;
 
+	// Eval. //
 	double * gpuDoubleData ;
 	cudaMalloc((void**) &gpuDoubleData, sizeof(double)*numResults) ;
 	evalSamples<<<dim3GridOuter,dim3BlockOuter>>>(order, numberOfSamples, sampleRegionStart, division, gpuDoubleData) ;
 
+	// Write Back. //
 	cudaEventRecord(transStart,0) ;
 	cudaMemcpy(resultsDoubleGpu,gpuDoubleData,sizeof(double)*numResults, cudaMemcpyDeviceToHost) ;
 	cudaEventRecord(transFinish,0) ;

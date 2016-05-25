@@ -381,7 +381,7 @@ void checkDeviation(std::vector<std::vector<DataType>> & resultsCpu, DataType * 
 	for (int i = 0; i < resultsCpu.size() ; ++i) {
 		for (int j = 0 ; j < resultsCpu[i].size() ; ++j) {
 			if ( (dev = std::abs(resultsCpu[i][j] - resultsGpu[i*resultsCpu[i].size()+j])) > 1E-5) {
-				printf("Deviation at result [%d %d %lf]\n", i, j, dev) ; 
+				printf("Deviation at result [%d %d %lf]\n", i+1, j+1, dev) ; 
 				noDevs = false ;
 			}
 		}
