@@ -159,7 +159,7 @@ template <typename DataType>
 __global__ void evalSamples(int numOrders, int numberOfSamples, DataType sampleRegionStart, DataType division, DataType * gpuData) {
 	int globalIDx = threadIdx.x + blockIdx.x*blockDim.x ;
 	int globalIDy = threadIdx.y + blockIdx.y*blockDim.y ;
-	if (globalIDx < numberOfSamples && globalIDy < numOrders) {
+	if (globalIDy < numberOfSamples && globalIDx < numOrders) {
 		DataType x = sampleRegionStart+(globalIDy+1)*division ;
 		if (x > 1) {
 			gpuData[globalIDx*numberOfSamples+globalIDy] = evalExpIntegralGt1(globalIDx,x) ;
@@ -198,7 +198,7 @@ void cudaRunExponentials(int order, int numberOfSamples, double & sampleRegionSt
 	int numResults = numberOfSamples*order ;
 	dim3 dim3BlockOuter(blockSizeOr,blockSizeSm) ;
 	dim3 dim3GridOuter((order/dim3BlockOuter.x) + (!(order%dim3BlockOuter.x)?0:1) , 
-			(numberOfSamples/dim3BlockOuter.x) + (!(numberOfSamples%dim3BlockOuter.x)?0:1));
+			(numberOfSamples/dim3BlockOuter.y) + (!(numberOfSamples%dim3BlockOuter.y)?0:1));
 	float elapsedTime ;
 	cudaEvent_t start, finish ;
 	cudaEvent_t transStart, transFinish ;
@@ -252,7 +252,6 @@ void cudaRunExponentials(int order, int numberOfSamples, double & sampleRegionSt
 	cudaEventRecord(finish, 0) ;
 	cudaEventSynchronize(finish) ;
 	cudaEventElapsedTime(&elapsedTime, start, finish);
-	printf("%f\n", elapsedTime);
 	timeTotalGpuDouble = elapsedTime/1E3 ;
 }		/* -----  end of function cudaRunExponentials  ----- */
 

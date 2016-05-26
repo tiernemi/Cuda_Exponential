@@ -36,13 +36,14 @@ float testFunc() {
 }
 
 
-bool verbose,timing,cpu,gpu ;
+bool verbose,timing,cpu,gpu,quiet ;
 unsigned int order,numberOfSamples,blockSizeOr,blockSizeSm ;
 double sampleRegionStart,sampleRegionEnd;	// The interval that we are going to use
 
 int main(int argc, char *argv[]) {
 	unsigned int ui,uj;
 	cpu=true;
+	quiet=false;
 	gpu=true;
 	verbose=false;
 	timing=false;
@@ -136,7 +137,7 @@ int main(int argc, char *argv[]) {
 				timeTransferFloat, timeTransferDouble) ;
 	}
 
-	if (timing) {
+	if (timing && !quiet) {
 		if (cpu) {
 			printf ("calculating the exponentials on the cpu took: %f seconds for floats\n",timeTotalCpuFloat);
 			printf ("calculating the exponentials on the cpu took: %f seconds for doubles\n",timeTotalCpuDouble);
@@ -153,6 +154,11 @@ int main(int argc, char *argv[]) {
 			printf (" %% transfer/total %f for floats\n", timeTransferFloat/timeTotalGpuFloat );
 			printf (" %% transfer/total %f for doubles\n",  timeTransferDouble/timeTotalGpuDouble );
 		}
+	} else if (timing) {
+		printf("%d %d %d %d %f %f %f %f %f %f\n", order, numberOfSamples, blockSizeOr, blockSizeSm, timeTotalCpuFloat/timeTotalGpuFloat
+				, timeTotalCpuFloat/(timeTotalGpuFloat-timeTransferFloat), timeTransferFloat/timeTotalGpuFloat, 
+				timeTotalCpuDouble/timeTotalGpuDouble
+				, timeTotalCpuDouble/(timeTotalGpuDouble-timeTransferDouble), timeTransferDouble/timeTotalGpuDouble) ;
 	}
 
 	if (verbose) {
@@ -165,10 +171,15 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (cpu && gpu) {
-		printf("FLOAT DEVIATIONS >>> \n");
-		checkDeviation(resultsFloatCpu,resultsFloatGpu) ;
-		printf("DOUBLE DEVIATIONS >>> \n");
-		checkDeviation(resultsDoubleCpu,resultsDoubleGpu) ;
+		if (!quiet) {
+			printf("FLOAT DEVIATIONS >>> \n");
+			checkDeviation(resultsFloatCpu,resultsFloatGpu) ;
+			printf("DOUBLE DEVIATIONS >>> \n");
+			checkDeviation(resultsDoubleCpu,resultsDoubleGpu) ;
+		} else {
+			checkDeviation(resultsFloatCpu,resultsFloatGpu) ;
+			checkDeviation(resultsDoubleCpu,resultsDoubleGpu) ;
+		}
 	}
 	return 0;
 }
@@ -305,7 +316,7 @@ DataType exponentialIntegral (const int n, const DataType & x) {
 
 int parseArguments (int argc, char *argv[]) {
 	int c;
-	while ((c = getopt (argc, argv, "cghn:m:a:b:tvo:s:")) != -1) {
+	while ((c = getopt (argc, argv, "cghn:m:a:b:tvo:s:q")) != -1) {
 		switch(c) {
 			case 'c':
 				cpu=false; break;	 //Skip the CPU test
@@ -329,6 +340,8 @@ int parseArguments (int argc, char *argv[]) {
 				verbose = true; break;
 			case 'g':
 				gpu = false ; break;
+			case 'q':
+				quiet = true ; break;
 			default:
 				fprintf(stderr, "Invalid option given\n");
 				printUsage();
@@ -386,7 +399,7 @@ void checkDeviation(std::vector<std::vector<DataType>> & resultsCpu, DataType * 
 			}
 		}
 	}
-	if (noDevs) {
+	if (noDevs && !quiet) {
 		std::cout << "No Deviations!" << std::endl;
 	}
 }		/* -----  end of function checkDeviation  ----- */
