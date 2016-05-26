@@ -206,7 +206,7 @@ void cudaRunExponentials(int order, int numberOfSamples, double & sampleRegionSt
 	cudaEventCreate(&finish) ;
 	cudaEventCreate(&transStart) ;
 	cudaEventCreate(&transFinish) ;
-    double division=(sampleRegionEnd-sampleRegionStart)/((double)(numberOfSamples));
+	double division=(sampleRegionEnd-sampleRegionStart)/((double)(numberOfSamples));
 	
 	// Float. //
 	cudaEventRecord(start, 0) ;
